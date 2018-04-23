@@ -20,6 +20,7 @@ defmodule Coxir.Mixfile do
 
   def application do
     [
+      extra_applications: [:logger, :swarm],
       mod: {Coxir, []}
     ]
   end
@@ -32,6 +33,7 @@ defmodule Coxir.Mixfile do
       {:websockex, "~> 0.4.0"},
       {:httpoison, "~> 0.13.0"},
       {:gen_stage, "~> 0.12.2"},
+      {:swarm, "~> 3.0"},
       {:ex_doc, "~> 0.18.1", only: :dev}
     ]
   end
