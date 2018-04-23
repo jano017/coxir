@@ -1,80 +1,107 @@
 defmodule Coxir.Gateway do
-  @moduledoc """
-  In charge of supervising all the shards,
-  provides methods to interact with them.
-  """
+  defmodule Worker do
+    require Logger
+    use WebSockex
 
-  use Supervisor
+    defmodule State do
+      defstruct [
+        :token,
+        heartbeat_interval: 5000,
+        sequence: 0,
+        id: 0,
+        shards: 1
+      ]
+    end
 
-  alias Coxir.API
-  alias Coxir.Gateway.Worker
+    def start_link(url, state) do
+      WebSockex.start_link(url, __MODULE__, state)
+    end
 
-  @doc false
-  def start_link do
+    def handle_frame({:binary, msg}, state) do
+      packet = :erlang.binary_to_term(msg)
+      next_state = case packet.op do
+        10 ->
+          Logger.debug("Coxir.Gateway: Connected to #{inspect packet.d._trace}")
+          Process.send(self, {:send,
+          :binary,
+          payload(%{
+            "token" => state.token,
+            "properties" => %{
+              "$os" => "linux",
+              "$device" => "coxir",
+              "$browser" => "coxir"
+            },
+            "compress" => false,
+            "large_threshold" => 250,
+            "shard" => [state.id, state.shards]
+          }, 2)
+          }, [])
+          Process.send(self, :heartbeat, [])
+          {:ok, %{state | heartbeat_interval: packet.d.heartbeat_interval, sequence: packet.s}}
+        9 -> 
+          Process.send(self, {:send,
+          :binary,
+          payload(%{
+            "token" => state.token,
+            "properties" => %{
+              "$os" => "linux",
+              "$device" => "coxir",
+              "$browser" => "coxir"
+            },
+            "compress" => false,
+            "large_threshold" => 250,
+            "shard" => [state.id, state.shards]
+          }, 2)
+          }, [])
+          {:ok, %{state | sequence: packet.s}}
+        0 ->
+          Logger.debug("Coxir.Gateway<#{state.id}>: Dispatching #{inspect packet.t}")
+          Swarm.publish(packet.t, packet.d)
+          {:ok, %{state | sequence: packet.s}}
+        11 ->
+          {:ok, state}
+        _ ->
+          Logger.debug("Coxir.Gateway<#{state.id}>: Opcode fallthrough: #{inspect packet}")
+          {:ok, %{state | sequence: packet.s}}
+      end
+    end
+
+    def handle_frame({type, msg}, state) do
+      Logger.debug("Coixr.Gateway<#{state.id}>: #{inspect type}, #{inspect msg}")
+      {:ok, state}
+    end
+
+    def handle_info({:send, type, msg}, state) do
+      {:reply, {type, msg}, state}
+    end
+
+    def handle_info(:heartbeat, %State{heartbeat_interval: heartbeat, sequence: seq} = state) do
+      Logger.debug("Coxir.Gateway<#{state.id}>: heartbeat #{inspect seq}")
+      Process.send_after(self, :heartbeat, heartbeat)
+      {:reply, {:binary, payload(seq, 1)}, state}
+    end
+
+    def payload(data, op) do
+      %{"op" => op, "d" => data}
+      |> :erlang.term_to_binary
+    end
+  end
+
+  def start(nprocs) do
+    for n <- 0..nprocs-1 do
+      name = String.to_atom("gateway_#{inspect n}")
+      {:ok, pid} = Swarm.register_name(name, __MODULE__, :register, [nprocs, n])
+      Swarm.join(:gateway, pid)
+    end
+  end
+
+  def register(shards, shard) do
     token = Application.get_env(:coxir, :token)
     if !token, do: raise "Please provide a token."
-
-    %{url: gateway, shards: shards} = API.request(:get, "gateway/bot")
-
-    shards = Application.get_env(:coxir, :shards, shards)
-
-    children = for index <- 1..shards do
-      state = %{
-        token: token,
-        shard: [index - 1, shards],
-        gateway: gateway <> "/?v=6&encoding=json"
-      }
-      worker(Worker, [state], [id: index - 1])
-    end
-    options = [
-      strategy: :one_for_one,
-      name: __MODULE__
-    ]
-    Supervisor.start_link(children, options)
-  end
-
-  @doc false
-  def child_spec(arg),
-    do: super(arg)
-
-  def set_status(pid, status, game) do
-    {since, afk} = status
-    |> case do
-      "idle" -> {1, true}
-      _other -> {0, false}
-    end
-    data = %{
-      game: game,
-      status: status,
-      since: since,
-      afk: afk
-    }
-    send(pid, 3, data)
-  end
-  def set_status(status, game) do
-    __MODULE__
-    |> Supervisor.which_children
-    |> Enum.map(
-      fn {_id, pid, _type, _modules} ->
-        set_status(pid, status, game)
-      end
-    )
-  end
-
-  @doc false
-  def send(pid, opcode, data) do
-    Kernel.send(pid, {:send, opcode, data})
-  end
-
-  @doc false
-  def get(shard) do
-    __MODULE__
-    |> Supervisor.which_children
-    |> Enum.find(
-      fn {id, _pid, _type, _modules} ->
-        id == shard
-      end
-    )
-    |> elem(1)
+    Worker.start_link("wss://gateway.discord.gg/?v=6&encoding=etf", %Worker.State{
+      token: token,
+      shards: shards,
+      id: shard
+    })
   end
 end
