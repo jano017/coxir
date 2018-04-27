@@ -55,6 +55,8 @@ defmodule Coxir.Gateway do
           }, [])
           {:ok, %{state | sequence: packet.s}}
         0 ->
+          Swarm.publish(packet.t, {packet.t, packet.d |> Enum.reduce(%{}, fn({key, val}, acc)
+            -> Map.put(acc, if is_binary(key) do String.to_atom(key) else key end, val) end)})
           Logger.debug("Coxir.Gateway<#{state.id}>: Dispatching #{inspect packet.t}")
           Swarm.publish(packet.t, packet.d)
           {:ok, %{state | sequence: packet.s}}
