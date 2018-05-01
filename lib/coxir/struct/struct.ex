@@ -4,8 +4,10 @@ defmodule Coxir.Struct do
   defmacro __using__(_opts) do
     quote location: :keep do
       alias Coxir.API
+      use GenServer
+      use Bitwise
 
-      @table __MODULE__
+      @name __MODULE__
       |> Module.split
       |> List.last
       |> String.downcase
@@ -43,19 +45,67 @@ defmodule Coxir.Struct do
         end
       end
 
-      def get(%{id: id}), do: get(id)
-      def get(id) do
-        fetch(id)
-        |> case do
-          nil -> nil
-          data -> pretty(data)
+      @doc false
+      def pretty(struct), do: struct
+
+      def call_shard(id, call) do
+        shard_name = &( GenServer.call({:via, :swarm, :"#{@name}_#{inspect &1}"}, call))
+        shards = length(Swarm.members(__MODULE__))
+        (id >>> 22)
+        |> rem(shards)
+        |> shard_name.()
+      end
+
+      def start(nproc) when is_integer(nproc) do
+        for n <- 0..nproc-1 do
+          pid = case Swarm.register_name(:"#{@name}_#{inspect n}", __MODULE__, :start, []) do
+            {:ok, pid} -> pid
+            {:error, {:already_started, pid}} -> pid
+            nil -> nil
+          end
+          Swarm.join(__MODULE__, pid)
         end
       end
 
+      def start do
+        GenServer.start_link(__MODULE__, [], [])
+      end
+
+      def init([]) do
+        {:ok, :ets.new(__MODULE__, [:set])}
+      end
+
+      def get(%{id: id}), do: get(id)
+      def get(id) do
+        call_shard(id, {:get, id})
+      end
+
+      def update(%{id: id} = data) do
+        call_shard(id, {:update, data})
+      end
+
       def select(pattern \\ %{}) do
-        :ets.tab2list(@table)
-        |> Enum.map(&decode/1)
-        |> Enum.filter(
+        Swarm.multi_call(__MODULE__, {:select, pattern})
+        |> Enum.concat
+      end
+
+      def parse_pattern(list, caller) do
+        GenServer.reply(caller, list |> Enum.to_list)
+      end
+
+      def handle_call({:update, %{id: id} = data}, _from, ets) do
+        {:reply,
+        :ets.insert(ets,
+          {id, case :ets.lookup(ets, id) do
+            [entry] -> Map.merge(data, entry)
+            [] -> data
+          end}),
+          ets}
+      end
+
+      def handle_call({:select, pattern}, from, ets) do
+        stream = :ets.tab2list(ets)
+        |> Stream.filter(
           fn struct ->
             pattern
             |> Map.to_list
@@ -68,65 +118,23 @@ defmodule Coxir.Struct do
             )
             |> length
             == 0
-          end
-        )
+          end)
+        Swarm.register_name(
+          :"#{@name}_select_#{String.slice(inspect(:rand.uniform), 2, 64)}",
+          __MODULE__, :parse_pattern, [stream, from])
+        {:noreply, ets}
       end
 
-      @doc false
-      def remove(%{id: id}), do: remove(id)
-      def remove(id) do
-        :ets.delete @table, {:id, id}
-      end
-
-      @doc false
-      def pretty(struct), do: struct
-
-      @doc false
-      def update(data) do
-        data = data
-        |> fetch
-        |> case do
-          nil ->
-            data
-          struct ->
-            Map.merge(struct, data)
-        end
-
-        :ets.insert @table, encode(data)
-      end
-
-      defp fetch(%{id: id}), do: fetch(id)
-      defp fetch(id) do
-        case :ets.lookup(@table, {:id, id}) do
-          [entry] ->
-            decode(entry)
+      def handle_call({:get, id}, _from, ets) do
+        entry = case :ets.lookup(ets, id) do
+          [entry] -> entry
           [] -> nil
         end
+        {:reply, entry, ets}
       end
-
-      defp encode(data) do
-        data
-        |> Map.to_list
-        |> List.insert_at(0, {:id, data.id})
-        |> List.to_tuple
-      end
-
-      defp decode(data) do
-        data
-        |> Tuple.to_list
-        |> Enum.into(%{})
-      end
-
+      defoverridable [init: 1]
       defoverridable [get: 1]
       defoverridable [pretty: 1]
-    end
-  end
-
-  @tables [:user, :guild, :role, :member, :channel, :message]
-
-  def create_tables do
-    for table <- @tables do
-      :ets.new table, [:set, :public, :named_table]
     end
   end
 end
