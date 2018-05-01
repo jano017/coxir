@@ -57,8 +57,8 @@ defmodule Coxir.Gateway do
         0 ->
           Swarm.publish(packet.t, {packet.t, packet.d |> Enum.reduce(%{}, fn({key, val}, acc)
             -> Map.put(acc, if is_binary(key) do String.to_atom(key) else key end, val) end)})
-          Logger.debug("Coxir.Gateway<#{state.id}>: Dispatching #{inspect packet.t}")
-          Swarm.publish(packet.t, packet.d)
+        1 ->
+          Process.send(self, {:send, :binary, payload(packet.s, 1)}, [])
           {:ok, %{state | sequence: packet.s}}
         11 ->
           {:ok, state}
@@ -70,6 +70,11 @@ defmodule Coxir.Gateway do
 
     def handle_frame({type, msg}, state) do
       Logger.debug("Coixr.Gateway<#{state.id}>: #{inspect type}, #{inspect msg}")
+      {:ok, state}
+    end
+
+    def handle_info({:"$gen_call", pid, :shard}, state) do
+      GenServer.reply(pid, String.to_atom "gateway_#{inspect state.id}")
       {:ok, state}
     end
 
@@ -91,7 +96,7 @@ defmodule Coxir.Gateway do
 
   def start(nprocs) do
     for n <- 0..nprocs-1 do
-      name = String.to_atom("gateway_#{inspect n}")
+      name = :"gateway_#{inspect n}"
       {:ok, pid} = Swarm.register_name(name, __MODULE__, :register, [nprocs, n])
       Swarm.join(:gateway, pid)
     end
@@ -105,5 +110,9 @@ defmodule Coxir.Gateway do
       shards: shards,
       id: shard
     })
+  end
+  
+  def get(shard) when is_integer(shard) do
+    String.to_atom("gateway_#{inspect shard}")
   end
 end
