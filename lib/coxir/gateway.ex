@@ -57,6 +57,7 @@ defmodule Coxir.Gateway do
         0 ->
           Swarm.publish(packet.t, {packet.t, packet.d |> Enum.reduce(%{}, fn({key, val}, acc)
             -> Map.put(acc, if is_binary(key) do String.to_atom(key) else key end, val) end)})
+          {:ok, %{state | sequence: packet.s}}
         1 ->
           Process.send(self, {:send, :binary, payload(packet.s, 1)}, [])
           {:ok, %{state | sequence: packet.s}}
