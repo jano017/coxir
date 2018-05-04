@@ -72,6 +72,7 @@ defmodule Coxir.Struct do
       end
 
       def init([]) do
+        Process.send(self, :prune, [])
         {:ok, :ets.new(__MODULE__, [:set])}
       end
 
@@ -91,6 +92,14 @@ defmodule Coxir.Struct do
 
       def parse_pattern(list, caller) do
         GenServer.reply(caller, list |> Enum.to_list)
+      end
+
+      def handle_info(:prune, ets) do
+        recent_allowed = ((DateTime.utc_now |> DateTime.to_unix(:millisecond)) - get_timeout - 1420070400000) <<< 22
+        n = :ets.select_delete(ets, [{{:_, %{id: :"$1"}}, [{:<, :"$1", {:const, recent_allowed}}], [:true]}])
+        Logger.debug("#{inspect n} #{@name} deleted")
+        Process.send_after(self, :prune, 60_000)
+        {:noreply, ets}
       end
 
       def handle_call({:update, %{id: id} = data}, _from, ets) do
