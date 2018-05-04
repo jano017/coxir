@@ -13,6 +13,21 @@ defmodule Coxir.Struct do
       |> String.downcase
       |> String.to_atom
 
+      def creation_time(id) when is_integer(id) do
+        ( id >>> 22 ) + 1420070400000
+      end
+
+      defp get_timeout do
+        Application.get_env(:coxir, :timeout)
+        |> case do
+          %{@name => timeout} when is_integer(timeout) ->
+            timeout
+          timeout when is_integer(timeout) ->
+            timeout
+          _ -> 24 * 60 * 60 * 1000
+        end
+      end
+
       defp put(map, key, value) do
         case map do
           %{error: _error} ->
@@ -110,6 +125,15 @@ defmodule Coxir.Struct do
             [] -> data
           end}),
           ets}
+      end
+
+      def handle_call({:select, pattern}, from, ets) when is_function(pattern, 1) do
+        Task.start(
+          fn() ->
+            GenServer.reply(from, :ets.select(ets, :ets.fun2ms(pattern)))
+          end
+          )
+        {:noreply, ets}
       end
 
       def handle_call({:select, pattern}, from, ets) do
