@@ -23,17 +23,19 @@ defmodule Coxir do
   @doc false
   def start(_type, _args) do
     children = [
-      supervisor(Voice, []),
-      supervisor(Stage, []),
-      supervisor(Gateway, [])
     ]
     options = [
       strategy: :one_for_one,
       name: __MODULE__
     ]
-    API.create_tables()
-    Struct.create_tables()
+    start
     Supervisor.start_link(children, options)
+  end
+
+  def start do
+    Coxir.Struct.Message.start 5
+    Coxir.Tracker.start
+    Coxir.Gateway.start 1
   end
 
   @doc false
